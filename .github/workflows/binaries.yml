@@ -1,0 +1,137 @@
+# The package conveyor: a release's binaries for every target, with signed build provenance, and its
+# PKGBUILD filled in. Called, not copied (README.md): the project keeps its build scripts and its
+# declaration (packaging/conveyor.toml); everything around them lives here, once.
+name: binaries
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build
+        required: true
+        type: string
+      declaration:
+        description: The project's conveyor declaration
+        required: false
+        type: string
+        default: packaging/conveyor.toml
+      upload:
+        description: Attach the files to the release and attest them (false - a dry run, kept as an artifact)
+        required: false
+        type: boolean
+        default: true
+permissions: {}
+jobs:
+  plan:
+    name: read the declaration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.d.outputs.name }}
+      prefix: ${{ steps.d.outputs.prefix }}
+      targets: ${{ steps.d.outputs.targets }}
+      build: ${{ steps.d.outputs.build }}
+      package: ${{ steps.d.outputs.package }}
+      pkgbuild: ${{ steps.d.outputs.pkgbuild }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - id: d
+        env:
+          DECLARATION: ${{ inputs.declaration }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, os, tomllib
+          d = tomllib.load(open(os.environ["DECLARATION"], "rb"))
+          p, b, a = d["package"], d.get("binaries", {}), d.get("arch", {})
+          print("name=" + p["name"]); print("prefix=" + p.get("tag-prefix", "v"))
+          print("targets=" + json.dumps(b.get("targets", ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"])))
+          print("build=" + b.get("build", "packaging/build-binary.sh")); print("package=" + b.get("package", "packaging/build-packages.sh"))
+          print("pkgbuild=" + a.get("pkgbuild", ""))
+          PY
+          cat "$GITHUB_OUTPUT"
+  binaries:
+    name: binary (${{ matrix.target }})
+    needs: plan
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    runs-on: ${{ startsWith(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - name: The pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - name: The target's standard library (not installed by `rustup show` alone)
+        run: rustup target add "${{ matrix.target }}"
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends musl-tools
+      - run: cargo install --locked cargo-deb cargo-generate-rpm
+      - run: cargo fetch --locked
+      - name: Build the release files (the project's own scripts)
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD: ${{ needs.plan.outputs.build }}
+          PACKAGE: ${{ needs.plan.outputs.package }}
+        run: |
+          "$BUILD" "$TARGET"
+          "$PACKAGE" "$TARGET"
+          mv dist/SHA256SUMS "dist/SHA256SUMS-$TARGET"
+          ls -l dist
+      - name: Attest the build provenance
+        if: inputs.upload
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+      - name: Attach to the release
+        if: inputs.upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.deb dist/*.rpm "dist/SHA256SUMS-$TARGET" --clobber
+      - name: Keep the dry run's files
+        if: ${{ !inputs.upload }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-${{ matrix.target }}
+          path: dist
+  pkgbuild:
+    name: PKGBUILD for the release
+    needs: plan
+    if: needs.plan.outputs.pkgbuild != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Fill in the version and the checksum of the tag's source tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          PKGBUILD: ${{ needs.plan.outputs.pkgbuild }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          version="${TAG#"$PREFIX"}"
+          sum="$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" | sha256sum | cut -d' ' -f1)"
+          sed -i -e "s/^pkgver=.*/pkgver=${version}/" -e "s/^sha256sums=.*/sha256sums=('${sum}')/" "$PKGBUILD"
+          grep -E '^(pkgver|sha256sums)=' "$PKGBUILD"
+          if [ "$UPLOAD" = true ]; then gh release upload "$TAG" "$PKGBUILD" --clobber; fi

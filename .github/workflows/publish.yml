@@ -1,0 +1,215 @@
+# The package conveyor: a signed pacman repository built from the release's own PKGBUILD, a page for
+# it, deployed only when every signature verifies, then installed the way a person would. Called,
+# not copied (README.md): the project keeps its declaration, its public key and its install test.
+name: publish
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to publish
+        required: true
+        type: string
+      declaration:
+        description: The project's conveyor declaration
+        required: false
+        type: string
+        default: packaging/conveyor.toml
+    secrets:
+      REPO_SIGNING_KEY:
+        description: The repository signing key (armoured private key)
+        required: true
+permissions: {}
+jobs:
+  plan:
+    name: read the declaration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.d.outputs.name }}
+      prefix: ${{ steps.d.outputs.prefix }}
+      fingerprint: ${{ steps.d.outputs.fingerprint }}
+      key: ${{ steps.d.outputs.key }}
+      title: ${{ steps.d.outputs.title }}
+      docs: ${{ steps.d.outputs.docs }}
+      verify: ${{ steps.d.outputs.verify }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: d
+        env:
+          DECLARATION: ${{ inputs.declaration }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import os, tomllib
+          d = tomllib.load(open(os.environ["DECLARATION"], "rb"))
+          p, s = d["package"], d.get("site", {})
+          for k, v in (("name", p["name"]), ("prefix", p.get("tag-prefix", "v")), ("fingerprint", p["fingerprint"]), ("key", p["key"]),
+                       ("title", s.get("title", p["name"] + " packages")), ("docs", s.get("docs-crate", "")), ("verify", s.get("verify", ""))):
+              print(f"{k}={v}")
+          PY
+          cat "$GITHUB_OUTPUT"
+  arch-build:
+    name: build the Arch package
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Build it from the release's own PKGBUILD, in an Arch container
+        env:
+          TAG: ${{ inputs.tag }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          mkdir -p out
+          cat > build.sh <<'SH'
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed base-devel sudo curl >/dev/null
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          sudo -Hu builder env TAG="$TAG" REPO="$REPO" bash -euo pipefail -c '
+            mkdir ~/b && cd ~/b
+            curl -fsSL -o PKGBUILD "https://github.com/$REPO/releases/download/$TAG/PKGBUILD"
+            makepkg -s --noconfirm'
+          cp /home/builder/b/"$NAME"-[0-9]*.pkg.tar.zst /out/
+          SH
+          docker run --rm -e TAG -e NAME -e REPO="$GITHUB_REPOSITORY" -v "$PWD/build.sh:/build.sh:ro" -v "$PWD/out:/out" archlinux:latest bash /build.sh
+          ls -l out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch-package
+          path: out/*.pkg.tar.zst
+  arch-sign:
+    name: sign the Arch repository
+    needs: [plan, arch-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: arch-package
+          path: pkg
+      - name: Sign (this step has the key, and runs only gpg and repo-add)
+        env:
+          REPO_SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}
+          FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          cat > sign.sh <<'SH'
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed gnupg >/dev/null
+          GNUPGHOME="$(mktemp -d)"; chmod 700 "$GNUPGHOME"; export GNUPGHOME
+          printf '%s\n' "$REPO_SIGNING_KEY" | gpg --batch --quiet --import 2>/dev/null; unset REPO_SIGNING_KEY
+          have="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')"
+          [ "$have" = "$FINGERPRINT" ] || { echo "the secret key is '$have', not the expected $FINGERPRINT" >&2; exit 1; }
+          out=arch-out/x86_64; mkdir -p "$out"; cp pkg/"$NAME"-[0-9]*.pkg.tar.zst "$out/"; cd "$out"
+          for f in "$NAME"-[0-9]*.pkg.tar.zst; do
+            gpg --batch --yes --local-user "$have" --detach-sign --output "$f.sig" "$f"
+            repo-add --sign --key "$have" "$NAME.db.tar.zst" "$f" >/dev/null
+          done
+          for kind in db files; do
+            cp --remove-destination "$NAME.$kind.tar.zst" "$NAME.$kind"
+            cp --remove-destination "$NAME.$kind.tar.zst.sig" "$NAME.$kind.sig"
+          done
+          chmod -R a+rX /w/arch-out
+          SH
+          docker run --rm -e REPO_SIGNING_KEY -e FINGERPRINT -e NAME -v "$PWD:/w" -w /w archlinux:latest bash /w/sign.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch-repo
+          path: arch-out
+  publish:
+    name: check and publish
+    needs: [plan, arch-sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy2.outputs.page_url || steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: arch-repo
+          path: arch-out
+      - name: The front page, the key, and the Arch repository
+        env:
+          KEY: ${{ needs.plan.outputs.key }}
+          TITLE: ${{ needs.plan.outputs.title }}
+        run: |
+          mkdir -p site/arch && cp -r arch-out/. site/arch/ && cp "$KEY" site/key.asc && touch site/.nojekyll
+          fp="$(gpg --show-keys --with-colons "$KEY" | awk -F: '/^fpr/{print $10; exit}')"
+          code="$(awk '$0 == "<!-- snippet:repo-pacman -->" { want = 1; next } want && /^```/ { if (inblock) exit; inblock = 1; next } inblock { print }' README.md \
+            | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+          [ -n "$code" ] || { echo "the README has no snippet marked repo-pacman" >&2; exit 1; }
+          cat > site/index.html <<HTML
+          <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>${TITLE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:.8rem;overflow:auto;border-radius:6px}</style></head>
+          <body><h1>${TITLE}</h1><p>A pacman repository for <a href="https://github.com/${GITHUB_REPOSITORY}">${GITHUB_REPOSITORY}</a>, so your package manager updates it with the rest of your system.</p>
+          <p>Signing key fingerprint: <code>${fp}</code> (<a href="key.asc">key.asc</a>)</p><h2>Arch, CachyOS, Manjaro, ...</h2><pre>${code}</pre>
+          <p>Delivered by the <a href="https://github.com/linux-package-distribution-oco/conveyor">package conveyor</a>.</p></body></html>
+          HTML
+      - name: The project's API documentation
+        if: needs.plan.outputs.docs != ''
+        env:
+          CRATE: ${{ needs.plan.outputs.docs }}
+        run: |
+          rustup show
+          cargo doc --workspace --no-deps --all-features --locked
+          echo "<meta http-equiv=\"refresh\" content=\"0; url=${CRATE}/index.html\">" > target/doc/index.html
+          cp -r target/doc site/doc
+      - name: Nothing is deployed unless every signature verifies
+        env:
+          KEY: ${{ needs.plan.outputs.key }}
+          FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME="$(mktemp -d)"; chmod 700 "$GNUPGHOME"; export GNUPGHOME
+          gpg --batch --quiet --import "$KEY" 2>/dev/null
+          have="$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')"
+          [ "$have" = "$FINGERPRINT" ] || { echo "FAIL: the committed key is $have, expected $FINGERPRINT" >&2; exit 1; }
+          cmp -s site/key.asc "$KEY" || { echo "FAIL: the site does not serve the committed key" >&2; exit 1; }
+          verify() { out="$(gpg --batch --verify "$@" 2>&1)" || { echo "FAIL: $1: $out" >&2; exit 1; }; echo "$out" | grep -q "${FINGERPRINT: -16}" || { echo "FAIL: $1 is signed by another key" >&2; exit 1; }; }
+          for repo in site/arch/*/; do
+            verify "$repo/$NAME.db.sig" "$repo/$NAME.db"
+            for p in "$repo"/*.pkg.tar.zst; do verify "$p.sig" "$p"; done
+            echo "  ok  pacman $(basename "$repo"): the database and every package verify"
+          done
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - name: Deploy
+        id: deploy
+        continue-on-error: true
+        uses: actions/deploy-pages@v5
+      - name: Wait a minute before the second try
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 60
+      - name: Deploy (second try)
+        id: deploy2
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+  verify:
+    name: pacman repository, real install
+    needs: [plan, publish]
+    if: needs.plan.outputs.verify != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    container: archlinux:latest
+    steps:
+      - name: A user's tools
+        run: pacman -Syu --noconfirm --needed sudo curl gawk && pacman-key --init && pacman-key --populate archlinux
+      - name: The project's install test - the README's snippet, then an update the way a person does
+        env:
+          SCRIPT: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/${{ needs.plan.outputs.verify }}
+        run: curl -fsSL "$SCRIPT" -o /tmp/install-test.sh && bash /tmp/install-test.sh

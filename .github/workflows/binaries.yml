@@ -74,9 +74,14 @@ jobs:
       - name: The target's standard library (not installed by `rustup show` alone)
         run: rustup target add "${{ matrix.target }}"
       - uses: Swatinem/rust-cache@v2
-      - run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends musl-tools
+      - name: The musl toolchain - patient: a passing archive outage must not fail a release
+        run: |
+          for try in 1 2 3 4 5 6; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update &&
+              sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends musl-tools && exit 0
+            echo "the package archive did not answer (try $try of 6); trying again in a minute"; sleep 60
+          done
+          echo "the package archive stayed unreachable for six minutes"; exit 1
       - run: cargo install --locked cargo-deb cargo-generate-rpm
       - run: cargo fetch --locked
       - name: Build the release files (the project's own scripts)

@@ -9,6 +9,8 @@ kind = "conveyor"
 parent = "open-commons-observatory"
 
 [exports]
+sources = "data/sources.json"
+research = "data/research.json"
 idea = "data/idea.json"
 decisions = "data/decisions.json"
 backlog = "data/backlog.json"

@@ -4,7 +4,7 @@
 calls the conveyor at a pinned version; the conveyor builds, verifies, signs and publishes - Arch
 (pacman) and Alpine (apk, for postmarketOS) repositories first.
 
-Status: **designed**, from the delivery machinery of snapall and lab-agent. Its idea, decisions
+Status: **in use** - lab-agent delivers through it (v0.1.47 was its first delivery). Next: snapall, then Alpine packages for postmarketOS. Its idea, decisions
 (with what was rejected) and path are in [`data/`](data), shown in the
 [Open Commons Observatory](https://open-commons-observatory.github.io/).
 

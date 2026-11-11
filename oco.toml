@@ -1,0 +1,17 @@
+# This repository's mark: how it fits the Open Commons Observatory's picture.
+schema = 1
+
+[project]
+id = "linux-package-distribution-oco/conveyor"
+name = "Linux package distribution: one conveyor, called not copied"
+title = "Package conveyor"
+kind = "conveyor"
+parent = "open-commons-observatory"
+
+[exports]
+idea = "data/idea.json"
+decisions = "data/decisions.json"
+backlog = "data/backlog.json"
+milestones = "data/milestones.json"
+workings = "data/workings.json"
+session_log = "data/session_log.json"

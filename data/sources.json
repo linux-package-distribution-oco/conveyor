@@ -1,0 +1,2 @@
+{"id":"install-nix-action","title":"install-nix-action","by":"Cachix","year":2019,"url":"https://github.com/cachix/install-nix-action","takes":"Nix in GitHub Actions, so CI builds in a project's own shell.nix."}
+{"id":"nix","title":"Nix: reproducible builds from a pinned definition","by":"Eelco Dolstra","year":2003,"url":"https://nixos.org/","takes":"One pinned definition of the toolchain, served from a binary cache: the lab machine and CI build in the same environment."}

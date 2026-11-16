@@ -26,3 +26,8 @@ A project keeps one declaration, `packaging/conveyor.toml`, and calls the convey
 
 The project keeps its build scripts, its PKGBUILD, its public key and its install test; the conveyor
 does everything around them. `v1` moves with compatible improvements; `v1.x.y` never moves.
+
+A release is said once it can be taken. The project's releaser makes it a draft, with its tag
+(release-please: `"draft": true` and `"force-tag-creation": true`; release-plz: `git_release_draft = true`);
+the conveyor attaches every file and then says the release. Whoever takes the newest release never
+finds one with nothing to take, and needs to know nothing of how it was made.

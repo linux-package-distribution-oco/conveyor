@@ -140,3 +140,26 @@ jobs:
           sed -i -e "s/^pkgver=.*/pkgver=${version}/" -e "s/^sha256sums=.*/sha256sums=('${sum}')/" "$PKGBUILD"
           grep -E '^(pkgver|sha256sums)=' "$PKGBUILD"
           if [ "$UPLOAD" = true ]; then gh release upload "$TAG" "$PKGBUILD" --clobber; fi
+  said:
+    # A release is said once it can be taken: its releaser makes it a draft, not yet said, and it is said
+    # here, after every file is attached - so no one who takes the newest ever finds nothing to take. A
+    # release already said stays as it was.
+    name: the release, said once its files are there
+    needs: [binaries, pkgbuild]
+    if: ${{ always() && inputs.upload && needs.binaries.result == 'success' && (needs.pkgbuild.result == 'success' || needs.pkgbuild.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = true ]; then
+            gh release edit "$TAG" --draft=false
+            echo "said: $TAG, with $(gh release view "$TAG" --json assets -q '.assets | length') files"
+          else
+            echo "$TAG was said already"
+          fi

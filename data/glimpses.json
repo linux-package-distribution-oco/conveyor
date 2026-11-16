@@ -1,2 +1,3 @@
 {"id":"g-20261111-213519","at":"2026-11-11T21:35:19Z","by":"lab-agent-session","kind":"chore","summary":"glimpses are recorded here from now on"}
 {"id":"g-20261116-161020","at":"2026-11-16T16:10:20Z","by":"claude","kind":"chore","summary":"a caller: what the gatherer writes is said where it writes it, not here"}
+{"id":"g-20261116-192510","at":"2026-11-16T19:25:10Z","by":"claude","kind":"feat","summary":"a release is said once its files are there: a draft, said by the conveyor","touches":"decisions:2026-11-16-a-release-is-said-once-its-files-are-there","where":"open-commons-observatory/ecosystem/problems:a-release-is-said-before-its-files-are-there marshall-oco/conversation/turns:turn-2026-11-16-continue-32"}

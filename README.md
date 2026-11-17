@@ -31,3 +31,26 @@ A release is said once it can be taken. The project's releaser makes it a draft,
 (release-please: `"draft": true` and `"force-tag-creation": true`; release-plz: `git_release_draft = true`);
 the conveyor attaches every file and then says the release. Whoever takes the newest release never
 finds one with nothing to take, and needs to know nothing of how it was made.
+
+### Alpine, for postmarketOS phones
+
+```yaml
+  alpine:             # a signed apk repository on the project's pages
+    uses: linux-package-distribution-oco/conveyor/.github/workflows/alpine.yml@v1
+    with: { tag: ${{ needs.tag.outputs.tag }} }
+    secrets: { APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }} }
+    permissions: { contents: read, pages: write, id-token: write }
+```
+
+```toml
+[alpine]
+apkbuild = "packaging/alpine/APKBUILD"       # pkgver and the checksums are filled in for the tag
+key = "packaging/alpine/NAME-DATE.rsa.pub"   # the public half; the private half is APK_SIGNING_KEY
+release = "3.24"                             # the Alpine the phones run (postmarketOS v26.06: 3.24)
+archs = ["aarch64"]
+```
+
+The APKBUILD is built from the tag in an Alpine container that never sees the key; packaging and the
+index are signed in a fresh container, the only one given the key. Nothing is deployed unless every
+package and index verifies against the committed key; after the deploy, the page's own lines are run
+in a clean Alpine container and the package must install at the tagged version.

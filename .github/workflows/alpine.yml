@@ -100,7 +100,9 @@ jobs:
         run: |
           docker run --rm -e REPO -e NAME -v "$PWD/w:/w" "alpine:$RELEASE" sh -euc '
             apk add -q --no-cache alpine-sdk
-            cd "/w/$REPO/$NAME" && abuild -F checksum && abuild -F deps fetch verify unpack prepare build'
+            cd "/w/$REPO/$NAME"
+            abuild -F checksum
+            abuild -F deps fetch verify unpack prepare build'
       - name: Package and index, signed (a fresh container, the only one with the key)
         env:
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
@@ -111,16 +113,19 @@ jobs:
         run: |
           docker run --rm -e APK_SIGNING_KEY -e REPO -e NAME -e KEYNAME="$(basename "$KEY" .pub)" \
             -v "$PWD/w:/w" -v "$PWD/out:/out" -v "$PWD/project/$KEY:/pub.key:ro" "alpine:$RELEASE" sh -euc '
-            apk add -q --no-cache abuild openssl
+            apk add -q --no-cache alpine-sdk openssl
             mkdir -p /root/.abuild && umask 077
             printf "%s\n" "$APK_SIGNING_KEY" > "/root/.abuild/$KEYNAME"; unset APK_SIGNING_KEY
             openssl rsa -in "/root/.abuild/$KEYNAME" -pubout 2>/dev/null | cmp -s - /pub.key ||
               { echo "the secret key is not the one whose public half is committed" >&2; exit 1; }
             cp /pub.key "/root/.abuild/$KEYNAME.pub" && cp /pub.key "/etc/apk/keys/$KEYNAME.pub"
             printf "PACKAGER_PRIVKEY=\"/root/.abuild/%s\"\nREPODEST=/out\n" "$KEYNAME" > /root/.abuild/abuild.conf
-            cd "/w/$REPO/$NAME" && abuild -F rootpkg && abuild -F index
+            cd "/w/$REPO/$NAME"
+            abuild -F rootpkg
+            abuild -F index
             chmod -R a+rX /out'
           find out -type f | sort
+          [ -n "$(find out -name "*.apk")" ] || { echo "no package was built" >&2; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: alpine-${{ matrix.arch }}

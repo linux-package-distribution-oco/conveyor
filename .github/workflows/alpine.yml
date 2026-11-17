@@ -219,7 +219,7 @@ jobs:
           set -eu
           base="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           for _ in 1 2 3 4 5 6; do wget -qO /tmp/index.html "$base/" && grep -q "$NAME" /tmp/index.html && break; sleep 20; done
-          sed -n '/<pre>/,/<\/pre>/p' /tmp/index.html | sed -e 's/<[^>]*>//g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' > /tmp/snippet.sh
+          sed -n '/<pre>/,/<\/pre>/p' /tmp/index.html | sed -e 's/.*<pre>//' -e 's/<\/pre>.*//' -e 's/<[^>]*>//g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' > /tmp/snippet.sh
           cat /tmp/snippet.sh && sh -eu /tmp/snippet.sh
           apk info -e "$NAME" && apk info -L "$NAME" | head -40
           have="$(apk info -v "$NAME" | head -1)"

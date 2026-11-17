@@ -222,5 +222,5 @@ jobs:
           sed -n '/<pre>/,/<\/pre>/p' /tmp/index.html | sed -e 's/.*<pre>//' -e 's/<\/pre>.*//' -e 's/<[^>]*>//g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' > /tmp/snippet.sh
           cat /tmp/snippet.sh && sh -eu /tmp/snippet.sh
           apk info -e "$NAME" && apk info -L "$NAME" | head -40
-          have="$(apk info -v "$NAME" | head -1)"
-          case "$have" in "$NAME-$VERSION-r"*) echo "  ok  installed $have" ;; *) echo "FAIL: installed $have, not $VERSION" >&2; exit 1 ;; esac
+          have="$(apk list --installed "$NAME" | head -1)"
+          case "$have" in "$NAME-$VERSION-r"*" "*) echo "  ok  installed $have" ;; *) echo "FAIL: installed $have, not $VERSION" >&2; exit 1 ;; esac

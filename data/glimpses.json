@@ -6,3 +6,4 @@
 {"id":"g-20261117-041141","at":"2026-11-17T04:11:41Z","by":"orchestration","kind":"fix","summary":"Alpine path: packaging gets abuild's whole toolset, and a step that fails stops the job"}
 {"id":"g-20261117-041400","at":"2026-11-17T04:14:00Z","by":"orchestration","kind":"fix","summary":"Alpine path: the install test runs the page's lines alone"}
 {"id":"g-20261117-041628","at":"2026-11-17T04:16:28Z","by":"orchestration","kind":"fix","summary":"Alpine path: the installed version read as apk 3 says it"}
+{"id":"g-20261117-041931","at":"2026-11-17T04:19:31Z","by":"orchestration","kind":"docs","summary":"cv-apk proven by lab-tools: devlab-health installed from its Alpine repository","advances":"backlog:cv-apk milestones:lpd-alpine","touches":"backlog:cv-apk"}

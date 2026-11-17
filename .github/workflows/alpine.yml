@@ -1,0 +1,221 @@
+# The package conveyor: a signed Alpine (apk) repository built from the release's own APKBUILD - for
+# postmarketOS phones - a page for it, deployed only when every signature verifies, then installed the
+# way a phone would. Called, not copied (README.md): the project keeps its declaration, its APKBUILD and
+# its public key; the private key is the project's secret APK_SIGNING_KEY.
+#
+# The key reaches one step only - packaging and indexing, after the project's code was built in steps
+# that never saw it - and lives in that step's container for the step's length.
+name: alpine
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to publish
+        required: true
+        type: string
+      declaration:
+        description: The project's conveyor declaration
+        required: false
+        type: string
+        default: packaging/conveyor.toml
+    secrets:
+      APK_SIGNING_KEY:
+        description: The repository signing key (an RSA private key, PEM - as abuild-keygen makes)
+        required: true
+permissions: {}
+jobs:
+  plan:
+    name: read the declaration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.d.outputs.name }}
+      version: ${{ steps.d.outputs.version }}
+      apkbuild: ${{ steps.d.outputs.apkbuild }}
+      key: ${{ steps.d.outputs.key }}
+      release: ${{ steps.d.outputs.release }}
+      repo: ${{ steps.d.outputs.repo }}
+      archs: ${{ steps.d.outputs.archs }}
+      title: ${{ steps.d.outputs.title }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - id: d
+        env:
+          DECLARATION: ${{ inputs.declaration }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          j="$(yq -p toml -o json '.' "$DECLARATION")"
+          get() { printf '%s' "$j" | jq -r "$1"; }
+          name="$(get '.package.name')"; prefix="$(get '.package["tag-prefix"] // "v"')"
+          [ -n "$(get '.alpine.apkbuild // empty')" ] || { echo "the declaration has no [alpine] apkbuild" >&2; exit 1; }
+          {
+            echo "name=$name"
+            echo "version=${TAG#"$prefix"}"
+            echo "apkbuild=$(get '.alpine.apkbuild')"
+            echo "key=$(get '.alpine.key')"
+            echo "release=$(get '.alpine.release // "3.24"')"
+            echo "repo=$(get '.alpine.repo // .package.name')"
+            echo "archs=$(get '.alpine.archs // ["aarch64"] | tojson')"
+            echo "title=$(get '.site.title // (.package.name + " packages")')"
+          } >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+          [ -f "$(get '.alpine.key')" ] || { echo "the public key $(get '.alpine.key') is not in the repository" >&2; exit 1; }
+  build:
+    name: build and sign (${{ matrix.arch }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.plan.outputs.archs) }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          path: project
+      - name: The APKBUILD for this release - its version - where abuild names the repository after its folder
+        env:
+          APKBUILD: ${{ needs.plan.outputs.apkbuild }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          REPO: ${{ needs.plan.outputs.repo }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          set -eu
+          mkdir -p "w/$REPO/$NAME" out site && cp "project/$APKBUILD" "w/$REPO/$NAME/APKBUILD"
+          sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=0/" "w/$REPO/$NAME/APKBUILD"
+          grep -E '^(pkgver|pkgrel)=' "w/$REPO/$NAME/APKBUILD"
+      - name: Build (the project's code - in a container of its own, which never sees the key)
+        env:
+          RELEASE: ${{ needs.plan.outputs.release }}
+          REPO: ${{ needs.plan.outputs.repo }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          docker run --rm -e REPO -e NAME -v "$PWD/w:/w" "alpine:$RELEASE" sh -euc '
+            apk add -q --no-cache alpine-sdk
+            cd "/w/$REPO/$NAME" && abuild -F checksum && abuild -F deps fetch verify unpack prepare build'
+      - name: Package and index, signed (a fresh container, the only one with the key)
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+          KEY: ${{ needs.plan.outputs.key }}
+          REPO: ${{ needs.plan.outputs.repo }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          docker run --rm -e APK_SIGNING_KEY -e REPO -e NAME -e KEYNAME="$(basename "$KEY" .pub)" \
+            -v "$PWD/w:/w" -v "$PWD/out:/out" -v "$PWD/project/$KEY:/pub.key:ro" "alpine:$RELEASE" sh -euc '
+            apk add -q --no-cache abuild openssl
+            mkdir -p /root/.abuild && umask 077
+            printf "%s\n" "$APK_SIGNING_KEY" > "/root/.abuild/$KEYNAME"; unset APK_SIGNING_KEY
+            openssl rsa -in "/root/.abuild/$KEYNAME" -pubout 2>/dev/null | cmp -s - /pub.key ||
+              { echo "the secret key is not the one whose public half is committed" >&2; exit 1; }
+            cp /pub.key "/root/.abuild/$KEYNAME.pub" && cp /pub.key "/etc/apk/keys/$KEYNAME.pub"
+            printf "PACKAGER_PRIVKEY=\"/root/.abuild/%s\"\nREPODEST=/out\n" "$KEYNAME" > /root/.abuild/abuild.conf
+            cd "/w/$REPO/$NAME" && abuild -F rootpkg && abuild -F index
+            chmod -R a+rX /out'
+          find out -type f | sort
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alpine-${{ matrix.arch }}
+          path: out
+  publish:
+    name: check and publish
+    needs: [plan, build]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy2.outputs.page_url || steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: alpine-*
+          path: built
+          merge-multiple: true
+      - name: The front page, the key, and the repository
+        env:
+          KEY: ${{ needs.plan.outputs.key }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+          REPO: ${{ needs.plan.outputs.repo }}
+          TITLE: ${{ needs.plan.outputs.title }}
+          NAME: ${{ needs.plan.outputs.name }}
+        run: |
+          set -eu
+          base="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          mkdir -p "site/alpine/v$RELEASE" site/keys && cp -r built/. "site/alpine/v$RELEASE/" && cp "$KEY" site/keys/ && touch site/.nojekyll
+          keyfile="$(basename "$KEY")"
+          cat > site/index.html <<HTML
+          <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>${TITLE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:.8rem;overflow:auto;border-radius:6px}</style></head>
+          <body><h1>${TITLE}</h1><p>An Alpine (apk) repository for <a href="https://github.com/${GITHUB_REPOSITORY}">${GITHUB_REPOSITORY}</a>, for postmarketOS and Alpine ${RELEASE}, so apk updates it with the rest of the system.</p>
+          <p>Signing key: <a href="keys/${keyfile}">${keyfile}</a></p><pre>wget -qO /etc/apk/keys/${keyfile} ${base}/keys/${keyfile}
+          echo ${base}/alpine/v${RELEASE}/${REPO} &gt;&gt; /etc/apk/repositories
+          apk update &amp;&amp; apk add ${NAME}</pre>
+          <p>Delivered by the <a href="https://github.com/linux-package-distribution-oco/conveyor">package conveyor</a>.</p></body></html>
+          HTML
+          find site -type f | sort
+      - name: Nothing is deployed unless every signature verifies
+        env:
+          KEY: ${{ needs.plan.outputs.key }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+        run: |
+          docker run --rm -v "$PWD/site:/site:ro" -v "$PWD/$KEY:/etc/apk/keys/$(basename "$KEY"):ro" "alpine:$RELEASE" sh -euc '
+            n=0
+            for p in $(find /site/alpine -name "*.apk"); do apk verify "$p" >/dev/null || { echo "FAIL: $p" >&2; exit 1; }; n=$((n+1)); done
+            [ "$n" -gt 0 ] || { echo "FAIL: no package was built" >&2; exit 1; }
+            for i in $(find /site/alpine -name APKINDEX.tar.gz); do apk verify "$i" >/dev/null || { echo "FAIL: $i" >&2; exit 1; }; done
+            echo "  ok  apk: every package ($n) and every index verify against the committed key"'
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - name: Deploy
+        id: deploy
+        continue-on-error: true
+        uses: actions/deploy-pages@v5
+      - name: Wait a minute before the second try
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 60
+      - name: Deploy (second try)
+        id: deploy2
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+  verify:
+    name: apk repository, real install (${{ matrix.arch }})
+    needs: [plan, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.plan.outputs.archs) }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    container: alpine:${{ needs.plan.outputs.release }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: The page's own lines, then the package, as a phone takes it
+        env:
+          NAME: ${{ needs.plan.outputs.name }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -eu
+          base="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          for _ in 1 2 3 4 5 6; do wget -qO /tmp/index.html "$base/" && grep -q "$NAME" /tmp/index.html && break; sleep 20; done
+          sed -n '/<pre>/,/<\/pre>/p' /tmp/index.html | sed -e 's/<[^>]*>//g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' > /tmp/snippet.sh
+          cat /tmp/snippet.sh && sh -eu /tmp/snippet.sh
+          apk info -e "$NAME" && apk info -L "$NAME" | head -40
+          have="$(apk info -v "$NAME" | head -1)"
+          case "$have" in "$NAME-$VERSION-r"*) echo "  ok  installed $have" ;; *) echo "FAIL: installed $have, not $VERSION" >&2; exit 1 ;; esac

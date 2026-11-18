@@ -81,7 +81,7 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           path: project
-      - name: The APKBUILD for this release - its version - where abuild names the repository after its folder
+      - name: The APKBUILD for this release - its folder whole, its version
         env:
           APKBUILD: ${{ needs.plan.outputs.apkbuild }}
           VERSION: ${{ needs.plan.outputs.version }}
@@ -89,9 +89,52 @@ jobs:
           NAME: ${{ needs.plan.outputs.name }}
         run: |
           set -eu
-          mkdir -p "w/$REPO/$NAME" out site && cp "project/$APKBUILD" "w/$REPO/$NAME/APKBUILD"
+          # abuild names the repository after the folder above the package's own; the APKBUILD's folder
+          # comes whole, for the files beside it (source=, install=) that abuild fetches and verifies
+          mkdir -p "w/$REPO/$NAME" out site && cp -R "project/$(dirname "$APKBUILD")/." "w/$REPO/$NAME/" && rm -rf "w/$REPO/$NAME/.git"
+          [ "$(basename "$APKBUILD")" = APKBUILD ] || mv "w/$REPO/$NAME/$(basename "$APKBUILD")" "w/$REPO/$NAME/APKBUILD"
+          # a run replaces the packages whose origin is NAME, so NAME is the APKBUILD's own pkgname
+          have="$(sed -n 's/^pkgname=//p' "w/$REPO/$NAME/APKBUILD" | tr -d "\"'" | head -1)"
+          [ "$have" = "$NAME" ] || { echo "the declaration's package name is $NAME, the APKBUILD's pkgname is $have" >&2; exit 1; }
           sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=0/" "w/$REPO/$NAME/APKBUILD"
           grep -E '^(pkgver|pkgrel)=' "w/$REPO/$NAME/APKBUILD"
+      - name: The packages the repository already holds, kept
+        env:
+          REPO: ${{ needs.plan.outputs.repo }}
+          NAME: ${{ needs.plan.outputs.name }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          # One repository holds every package of the project's pages: the live index says which, and each
+          # package that does not come from this APKBUILD (its origin is not NAME) is fetched into the
+          # repository folder, so the signed index below covers them all. The pages are replaced whole at
+          # a deploy; this is how an earlier package survives it. No live repository yet is no earlier package.
+          base="${PAGES_BASE:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
+          url="$base/alpine/v$RELEASE/$REPO/$ARCH"
+          # an index lists, per package: its name, its version and its origin
+          apkindex() {
+            txt="$(tar -xzOf "$1" APKINDEX)" || return 1
+            printf '%s\n' "$txt" | awk 'BEGIN { RS = ""; FS = "\n" }
+              { p = ""; v = ""; o = ""
+                for (i = 1; i <= NF; i++) { if ($i ~ /^P:/) p = substr($i, 3); if ($i ~ /^V:/) v = substr($i, 3); if ($i ~ /^o:/) o = substr($i, 3) }
+                if (p != "") { if (o == "") o = p; print p, v, o } }'
+          }
+          dir="out/$REPO/$ARCH"; mkdir -p "$dir"
+          # the query keeps a cache of the pages (about ten minutes) from serving an index older than the last deploy
+          code="$(curl -sS -o live.tar.gz -w '%{http_code}' --retry 3 "$url/APKINDEX.tar.gz?run=${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}")"
+          case "$code" in
+            404) echo "no live repository at $url: nothing earlier to keep"; exit 0 ;;
+            200) ;;
+            *) echo "the live index answered $code: an earlier package would be lost, so no build" >&2; exit 1 ;;
+          esac
+          live="$(apkindex live.tar.gz)"
+          printf '%s\n' "$live" | awk -v name="$NAME" '$3 != name { print $1 "-" $2 ".apk" }' > kept.txt
+          while read -r f; do
+            case "$f" in ""|*/*|.*) echo "FAIL: the live index names a file that is not a plain file name: $f" >&2; exit 1 ;; esac
+            curl -fsS --retry 3 -o "$dir/$f" "$url/$f"
+            echo "  kept $f"
+          done < kept.txt
       - name: Build (the project's code - in a container of its own, which never sees the key)
         env:
           RELEASE: ${{ needs.plan.outputs.release }}
@@ -157,19 +200,32 @@ jobs:
           RELEASE: ${{ needs.plan.outputs.release }}
           REPO: ${{ needs.plan.outputs.repo }}
           TITLE: ${{ needs.plan.outputs.title }}
-          NAME: ${{ needs.plan.outputs.name }}
         run: |
           set -eu
-          base="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          base="${PAGES_BASE:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
           mkdir -p "site/alpine/v$RELEASE" site/keys && cp -r built/. "site/alpine/v$RELEASE/" && cp "$KEY" site/keys/ && touch site/.nojekyll
           keyfile="$(basename "$KEY")"
+          # the packages the page offers are the origins its signed indexes list - every package of the
+          # repository, this release's and the ones kept - not what this one run was told; every
+          # architecture's index lists the same ones (packages of one repository share their archs)
+          names=""
+          for idx in $(find "site/alpine/v$RELEASE/$REPO" -name APKINDEX.tar.gz | sort); do
+            txt="$(tar -xzOf "$idx" APKINDEX)"
+            these="$(printf '%s\n' "$txt" | sed -n 's/^o://p' | sort -u | tr '\n' ' ')"
+            [ -n "$these" ] || { echo "the index $idx lists no package" >&2; exit 1; }
+            [ -z "$names" ] || [ "$these" = "$names" ] || { echo "FAIL: the architectures' indexes list different packages ($names / $these): the packages of one repository share their archs" >&2; exit 1; }
+            names="$these"
+          done
+          [ -n "$names" ] || { echo "no index was built" >&2; exit 1; }
+          adds="$(for n in $names; do printf 'apk add %s\n' "$n"; done)"
           cat > site/index.html <<HTML
           <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
           <title>${TITLE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:.8rem;overflow:auto;border-radius:6px}</style></head>
           <body><h1>${TITLE}</h1><p>An Alpine (apk) repository for <a href="https://github.com/${GITHUB_REPOSITORY}">${GITHUB_REPOSITORY}</a>, for postmarketOS and Alpine ${RELEASE}, so apk updates it with the rest of the system.</p>
           <p>Signing key: <a href="keys/${keyfile}">${keyfile}</a></p><pre>wget -qO /etc/apk/keys/${keyfile} ${base}/keys/${keyfile}
           echo ${base}/alpine/v${RELEASE}/${REPO} &gt;&gt; /etc/apk/repositories
-          apk update &amp;&amp; apk add ${NAME}</pre>
+          apk update
+          ${adds}</pre>
           <p>Delivered by the <a href="https://github.com/linux-package-distribution-oco/conveyor">package conveyor</a>.</p></body></html>
           HTML
           find site -type f | sort
@@ -184,6 +240,37 @@ jobs:
             [ "$n" -gt 0 ] || { echo "FAIL: no package was built" >&2; exit 1; }
             for i in $(find /site/alpine -name APKINDEX.tar.gz); do apk verify "$i" >/dev/null || { echo "FAIL: $i" >&2; exit 1; }; done
             echo "  ok  apk: every package ($n) and every index verify against the committed key"'
+      - name: Nothing already live is lost
+        env:
+          NAME: ${{ needs.plan.outputs.name }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+          REPO: ${{ needs.plan.outputs.repo }}
+        run: |
+          set -eu
+          # A deploy replaces the pages whole. If a package is live that this site does not hold at that
+          # version (another package's run deployed between this run's build and now), say so and deploy
+          # nothing: running the packages jobs one after another (needs:) is the caller's half of the same
+          # rule. Every architecture that is live is looked at, the ones this site has no index for too.
+          base="${PAGES_BASE:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
+          apkindex() {
+            txt="$(tar -xzOf "$1" APKINDEX)" || return 1
+            printf '%s\n' "$txt" | awk 'BEGIN { RS = ""; FS = "\n" }
+              { p = ""; v = ""; o = ""
+                for (i = 1; i <= NF; i++) { if ($i ~ /^P:/) p = substr($i, 3); if ($i ~ /^V:/) v = substr($i, 3); if ($i ~ /^o:/) o = substr($i, 3) }
+                if (p != "") { if (o == "") o = p; print p, v, o } }'
+          }
+          for arch in aarch64 x86_64 armv7 armhf x86 riscv64 ppc64le s390x loongarch64; do
+            rel="alpine/v$RELEASE/$REPO/$arch/APKINDEX.tar.gz"
+            code="$(curl -sS -o live.tar.gz -w '%{http_code}' --retry 3 "$base/$rel?run=${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}")"
+            case "$code" in 404) continue ;; 200) ;; *) echo "the live $rel answered $code" >&2; exit 1 ;; esac
+            [ -f "site/$rel" ] || { echo "FAIL: $rel is live and this site has no index for that architecture" >&2; exit 1; }
+            live="$(apkindex live.tar.gz)"
+            here="$(apkindex "site/$rel")"
+            printf '%s\n' "$here" | awk '{ print $1 "-" $2 }' > site.pkgs
+            lost="$(printf '%s\n' "$live" | awk -v name="$NAME" '$3 != name { print $1 "-" $2 }' | grep -vxF -f site.pkgs || true)"
+            [ -z "$lost" ] || { echo "FAIL: live in $rel and not in this site: $lost" >&2; exit 1; }
+          done
+          echo "  ok  every package that is live is in the site, at its live version"
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
@@ -211,16 +298,38 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: The page's own lines, then the package, as a phone takes it
+      - name: The page's own lines, then every package, as a phone takes it
         env:
           NAME: ${{ needs.plan.outputs.name }}
           VERSION: ${{ needs.plan.outputs.version }}
+          REPO: ${{ needs.plan.outputs.repo }}
+          RELEASE: ${{ needs.plan.outputs.release }}
         run: |
           set -eu
-          base="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
-          for _ in 1 2 3 4 5 6; do wget -qO /tmp/index.html "$base/" && grep -q "$NAME" /tmp/index.html && break; sleep 20; done
-          sed -n '/<pre>/,/<\/pre>/p' /tmp/index.html | sed -e 's/.*<pre>//' -e 's/<\/pre>.*//' -e 's/<[^>]*>//g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' > /tmp/snippet.sh
+          base="${PAGES_BASE:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
+          # the pages are live when the page lists this package AND the index serves this release of it
+          # (a page from an earlier release of the same package would otherwise pass for the new one)
+          live() {
+            wget -qO /tmp/index.html "$base/?run=$$" && grep -Eq "apk add $NAME(</pre>)?\$" /tmp/index.html &&
+              wget -qO /tmp/live.tar.gz "$base/alpine/v$RELEASE/$REPO/$(apk --print-arch)/APKINDEX.tar.gz?run=$$" &&
+              tar -xzOf /tmp/live.tar.gz APKINDEX | awk -v n="$NAME" -v v="$VERSION-r0" 'BEGIN { RS = ""; FS = "\n" }
+                { p = ""; q = ""; for (i = 1; i <= NF; i++) { if ($i ~ /^P:/) p = substr($i, 3); if ($i ~ /^V:/) q = substr($i, 3) } if (p == n && q == v) f = 1 }
+                END { exit !f }'
+          }
+          for _ in 1 2 3 4 5 6; do live && break; sleep 20; done
+          live || { echo "FAIL: the pages do not serve $NAME $VERSION" >&2; exit 1; }
+          sed -n '/<pre>/,/<\/pre>/p' /tmp/index.html | sed -e 's/.*<pre>//' -e 's/<\/pre>.*//' -e 's/<[^>]*>//g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' | sed '/^$/d' > /tmp/snippet.sh
           cat /tmp/snippet.sh && sh -eu /tmp/snippet.sh
-          apk info -e "$NAME" && apk info -L "$NAME" | head -40
-          have="$(apk list --installed "$NAME" | head -1)"
-          case "$have" in "$NAME-$VERSION-r"*" "*) echo "  ok  installed $have" ;; *) echo "FAIL: installed $have, not $VERSION" >&2; exit 1 ;; esac
+          # every package the page offers is installed, and this release's at its tagged version
+          names="$(sed -n 's/^apk add //p' /tmp/snippet.sh | tr '\n' ' ')"
+          [ -n "$names" ] || { echo "FAIL: the page offers no package" >&2; exit 1; }
+          case " $names " in *" $NAME "*) ;; *) echo "FAIL: the page does not offer $NAME" >&2; exit 1 ;; esac
+          for n in $names; do
+            apk info -e "$n" >/dev/null || { echo "FAIL: $n is not installed" >&2; exit 1; }
+            have="$(apk list --installed "$n" | head -1)"
+            if [ "$n" = "$NAME" ]; then
+              case "$have" in "$n-$VERSION-r"*" "*) ;; *) echo "FAIL: installed $have, not $VERSION" >&2; exit 1 ;; esac
+            fi
+            echo "  ok  installed $have"
+          done
+          apk info -L "$NAME" | head -40

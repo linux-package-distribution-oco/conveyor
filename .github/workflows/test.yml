@@ -1,0 +1,40 @@
+# The conveyor's own test of alpine.yml: its steps, taken out of the file and run in order against
+# two fixture packages (tests/alpine/run.sh) - a package whose source sits beside its APKBUILD, a
+# second package that must not replace the first on the pages, and the guard that refuses a deploy
+# which would lose a live package. And the shell checks: sh -n and shellcheck, on the test and on
+# every script the workflow carries.
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: sh -n and shellcheck, on the test and on every run step of the workflows
+        run: |
+          set -eu
+          sh -n tests/alpine/run.sh
+          shellcheck -s sh -S warning tests/alpine/run.sh
+          mkdir blocks
+          for wf in alpine; do
+            f=".github/workflows/$wf.yml"
+            n="$(yq '[.jobs[].steps[] | select(.run)] | length' "$f")"
+            i=0
+            while [ "$i" -lt "$n" ]; do
+              yq "[.jobs[].steps[] | select(.run)] | .[$i].run" "$f" > "blocks/$wf-$i.sh"
+              i=$((i + 1))
+            done
+          done
+          shellcheck -s bash -S warning blocks/*.sh
+  alpine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/alpine/run.sh

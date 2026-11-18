@@ -54,3 +54,34 @@ The APKBUILD is built from the tag in an Alpine container that never sees the ke
 index are signed in a fresh container, the only one given the key. Nothing is deployed unless every
 package and index verifies against the committed key; after the deploy, the page's own lines are run
 in a clean Alpine container and the package must install at the tagged version.
+
+#### One repository, several packages
+
+A project may keep more than one package in the same pages: one declaration for each (`declaration:`
+names it), one call for each, in a row. The APKBUILD's whole folder is copied, so the files beside it
+(`source=`, `install=`) are found by abuild; the repository's signed index covers every package - the
+ones kept from the live pages and the one just built - and the front page offers each of them. A run
+replaces only the packages of its own APKBUILD (its subpackages too: they share its origin), never
+another's.
+
+```yaml
+  alpine-health:
+    uses: linux-package-distribution-oco/conveyor/.github/workflows/alpine.yml@v1
+    with: { tag: ${{ needs.tag.outputs.health }} }
+    secrets: { APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }} }
+    permissions: { contents: read, pages: write, id-token: write }
+  alpine-shell:
+    needs: alpine-health          # one after the other: both write the same pages
+    if: ${{ !cancelled() && needs.alpine-health.result != 'failure' && needs.tag.outputs.shell != '' }}
+    uses: linux-package-distribution-oco/conveyor/.github/workflows/alpine.yml@v1
+    with: { tag: ${{ needs.tag.outputs.shell }}, declaration: packaging/shell/conveyor.toml }
+    secrets: { APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }} }
+    permissions: { contents: read, pages: write, id-token: write }
+```
+
+Both declarations name the same `repo`, `release`, `archs` and `key` (and the same `[site] title`: the
+front page is rewritten by each run). A run keeps the packages the live index lists, and its
+declared `name` must be its APKBUILD's `pkgname`. A run stops before the deploy if a package is live
+that its site does not hold at that version, or an architecture is live that its site has no index
+for (two runs overlapped, or the archs differ). `tests/alpine/run.sh` proves all of it on two fixture
+packages, with a local pages server.

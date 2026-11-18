@@ -1,0 +1,17 @@
+# A fixture for the conveyor's own test: a package whose source is a file beside its APKBUILD
+# (not a download), as sxmo-utils's rootfs-* files are. Its pkgver and checksum are the conveyor's to fill.
+pkgname=fixt-one
+pkgver=0
+pkgrel=0
+pkgdesc="Conveyor test fixture one"
+url="https://example.invalid/fixt-one"
+arch="noarch"
+license="MIT"
+options="!check"
+source="hello-one.sh"
+
+package() {
+	install -Dm755 "$srcdir/hello-one.sh" "$pkgdir/usr/bin/fixt-one"
+}
+
+sha512sums=""

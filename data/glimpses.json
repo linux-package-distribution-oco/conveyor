@@ -9,3 +9,4 @@
 {"id":"g-20261117-041931","at":"2026-11-17T04:19:31Z","by":"orchestration","kind":"docs","summary":"cv-apk proven by lab-tools: devlab-health installed from its Alpine repository","advances":"backlog:cv-apk milestones:lpd-alpine","touches":"backlog:cv-apk"}
 {"id":"g-20261118-140013","at":"2026-11-18T14:00:13Z","by":"conveyor-builder","kind":"feat","summary":"alpine.yml keeps several packages in one repository","advances":"backlog:cv-sxmo"}
 {"id":"g-20261118-141141","at":"2026-11-18T14:11:41Z","by":"conveyor-builder","kind":"fix","summary":"alpine.yml packaging container has the makedepends too (abuild deps before the key)","advances":"backlog:cv-sxmo"}
+{"id":"g-20261118-142235","at":"2026-11-18T14:22:35Z","by":"conveyor-builder","kind":"docs","summary":"cv-sxmo: sxmo-utils published beside lpoco-health and installed in a clean Alpine","advances":"backlog:cv-sxmo"}

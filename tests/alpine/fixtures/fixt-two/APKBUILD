@@ -8,9 +8,11 @@ url="https://example.invalid/fixt-two"
 arch="noarch"
 license="MIT"
 options="!check"
+makedepends="libcap-utils"   # package() needs setcap: the packaging container must have the makedepends too
 source="hello-two.sh"
 
 package() {
+	command -v setcap >/dev/null || { echo "package(): no setcap: the makedepends are not here" >&2; return 1; }
 	install -Dm755 "$srcdir/hello-two.sh" "$pkgdir/usr/bin/fixt-two"
 }
 

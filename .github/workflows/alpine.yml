@@ -157,6 +157,8 @@ jobs:
           docker run --rm -e APK_SIGNING_KEY -e REPO -e NAME -e KEYNAME="$(basename "$KEY" .pub)" \
             -v "$PWD/w:/w" -v "$PWD/out:/out" -v "$PWD/project/$KEY:/pub.key:ro" "alpine:$RELEASE" sh -euc '
             apk add -q --no-cache alpine-sdk openssl
+            # what package() may need from the makedepends (sxmo-utils: setcap); the key is not here yet
+            (cd "/w/$REPO/$NAME" && abuild -F deps)
             mkdir -p /root/.abuild && umask 077
             printf "%s\n" "$APK_SIGNING_KEY" > "/root/.abuild/$KEYNAME"; unset APK_SIGNING_KEY
             openssl rsa -in "/root/.abuild/$KEYNAME" -pubout 2>/dev/null | cmp -s - /pub.key ||

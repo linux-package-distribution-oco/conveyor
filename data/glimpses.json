@@ -12,3 +12,4 @@
 {"id":"g-20261118-142235","at":"2026-11-18T14:22:35Z","by":"conveyor-builder","kind":"docs","summary":"cv-sxmo: sxmo-utils published beside lpoco-health and installed in a clean Alpine","advances":"backlog:cv-sxmo"}
 {"id":"g-20261119-051438","at":"2026-11-19T05:14:38Z","by":"orchestration-renewed","kind":"feat","summary":"alpine.yml: the page names each package's licence, origin and exact source","advances":"backlog:cv-apk"}
 {"id":"g-20261119-052319","at":"2026-11-19T05:23:19Z","by":"orchestration-renewed","kind":"feat","summary":"alpine.yml: a package can be retired by the declaration, and only then leaves the pages","advances":"backlog:cv-apk"}
+{"id":"g-20261119-053411","at":"2026-11-19T05:34:11Z","by":"orchestration-renewed","kind":"feat","summary":"alpine.yml: retire also as a call input, for a retirement newer than the release tag","advances":"backlog:cv-apk"}

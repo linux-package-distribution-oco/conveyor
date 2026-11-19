@@ -10,6 +10,10 @@
 # Each release runs: the APKBUILD step, the kept-packages step, build, signed packaging, the front page,
 # the live check, the signature check, a (local) deploy, and the verify job's install step in a clean Alpine.
 #
+# And the front page names, per package, what the reader of a redistributed binary is owed (AGPL-3.0 6(d)):
+# its licence, its origin and where the exact source is - derived from the APKBUILD and the index, kept for
+# the packages an earlier run published, and not lost for a package published before the conveyor kept them.
+#
 # Needs: docker, yq (mikefarah), jq, curl, openssl. No key but a throwaway one made here.
 # ALPINE_YML=path tests another copy of the workflow (default: the one beside this repository's tests).
 set -eu
@@ -91,6 +95,9 @@ release() {
   export NAME="$pkg" REPO=conveyor-test APKBUILD="packaging/$pkg/APKBUILD" TITLE="conveyor test packages"
   export VERSION RELEASE KEY ARCH APK_SIGNING_KEY PAGES_BASE
   export GITHUB_REPOSITORY_OWNER=nobody GITHUB_REPOSITORY=nobody/conveyor-test
+  export TAG="$pkg-v$VERSION"
+  # the publish job has the tag checked out: the package's folder as the project committed it
+  mkdir -p "$run/pub/packaging/$pkg" && cp -R "$FIXTURES/$pkg/." "$run/pub/packaging/$pkg/"
 
   run_step build "The APKBUILD for this release - its folder whole, its version" "$run"
   run_step build "The packages the repository already holds, kept" "$run"
@@ -116,10 +123,21 @@ idx() { curl -fsS "$PAGES_BASE/alpine/v$RELEASE/conveyor-test/$ARCH/APKINDEX.tar
 apks() { find "$tmp/pages/alpine" -name "$1-[0-9]*.apk" | wc -l | tr -d ' '; }
 saved() { cp "$tmp/pages/alpine/v$RELEASE/conveyor-test/$ARCH/APKINDEX.tar.gz" "$tmp/index-$1.tgz"; }
 
+# the front page's section of one package (the page writes each section over several lines)
+section() { sed -n "/<section id=\"$1\">/,/<\/section>/p" "$tmp/pages/index.html"; }
+# owes PKG TEXT...: the page says each text under that package - its licence, origin, source (AGPL-3.0 6(d))
+owes() {
+  s="$(section "$1")"; [ -n "$s" ] || fail "the front page has no section for $1"; p="$1"; shift
+  for t in "$@"; do printf '%s\n' "$s" | grep -qF -- "$t" || fail "the front page does not say, of $p: $t"; done
+}
+
 release fixt-one 1
 [ "$(idx)" = "fixt-one " ] || fail "after fixt-one 1 the repository lists: $(idx)"
 ok "fixt-one 1: a package with a source beside its APKBUILD is built, signed, listed and installs"
 saved one
+owes fixt-one "MIT" "https://example.invalid/fixt-one" "fixture one, written for the conveyor's own test (no upstream)" \
+  "https://github.com/nobody/conveyor-test/tree/fixt-one-v1/packaging/fixt-one"
+ok "fixt-one 1: the page names its licence, its origin and where its exact source is"
 
 release fixt-two 1
 [ "$(idx)" = "fixt-one fixt-two " ] || fail "after fixt-two 1 the repository lists: $(idx), not fixt-one and fixt-two"
@@ -127,12 +145,57 @@ release fixt-two 1
 grep -q 'apk add fixt-one' "$tmp/pages/index.html" && grep -q 'apk add fixt-two' "$tmp/pages/index.html" || fail "the front page does not name both"
 ok "fixt-two 1: the second package did not replace the first; both listed, both installed"
 saved two
+owes fixt-two "AGPL-3.0-only" "https://example.invalid/fixt-two" "fixture two by an imaginary upstream" \
+  "https://github.com/nobody/conveyor-test/tree/fixt-two-v1/packaging/fixt-two"
+owes fixt-one "MIT" "fixture one, written for the conveyor's own test" "tree/fixt-one-v1/packaging/fixt-one"
+owes fixt-two '&lt;b&gt; &amp; &quot;q&quot;'
+ok "fixt-two 1: the page names the second package's licence, origin and source, and the first's as before"
 
 release fixt-one 2
 [ "$(idx)" = "fixt-one fixt-two " ] || fail "after fixt-one 2 the repository lists: $(idx)"
 [ "$(apks fixt-one)" = 1 ] && [ -f "$(find "$tmp/pages/alpine" -name 'fixt-one-2-r0.apk')" ] || fail "fixt-one 2 did not replace fixt-one 1"
 [ "$(apks fixt-two)" = 1 ] || fail "fixt-two was lost when fixt-one was rebuilt"
 ok "fixt-one 2: the rebuilt package replaced its own earlier one and kept the other"
+owes fixt-one "tree/fixt-one-v2/packaging/fixt-one"
+owes fixt-two "AGPL-3.0-only" "fixture two by an imaginary upstream" "tree/fixt-two-v1/packaging/fixt-two"
+section fixt-one | grep -qF "fixt-one-v1" && fail "the page still points fixt-one at its first release's source"
+ok "fixt-one 2: the page's source for it is the new tag's, and the other package's is kept"
+
+# the page of a package whose source is a tarball at a public tag, the tag made from pkgver (as sxmo-utils's
+# is): the URL as the APKBUILD expands it for the release, the files beside the APKBUILD as the tag's folder
+# (the page step, on a fresh copy of the last release's publish folder, with another APKBUILD in it)
+rm -rf "$tmp/pg"; cp -R "$tmp/run-fixt-one-2/pub" "$tmp/pg"; rm -rf "$tmp/pg/site"
+cp "$FIXTURES/page-url/APKBUILD" "$tmp/pg/packaging/fixt-one/APKBUILD"
+( export VERSION=1.18.1_p20261118 TAG=sxmo-utils-v1.18.1_p20261118 NAME=fixt-one
+  run_step publish "The front page, the key, and the repository" "$tmp/pg" )
+s="$(sed -n '/<section id="fixt-one">/,/<\/section>/p' "$tmp/pg/site/index.html")"
+for t in "https://github.com/grenudi/sxmo-utils/archive/refs/tags/lab-20261118.1.tar.gz" \
+  "sxmo-utils by ~mil on sr.ht; APKBUILD from Alpine aports; source our fork at the lab tag" \
+  "tree/sxmo-utils-v1.18.1_p20261118/packaging/fixt-one"; do
+  printf '%s\n' "$s" | grep -qF -- "$t" || fail "the page does not say, of a package at a public tag: $t"
+done
+ok "a source at a public tag: the page gives the tag's tarball as the APKBUILD expands it, and the folder at the release tag"
+
+# a package that is live without the record the conveyor keeps (published before it kept one): the page
+# still comes, with the licence and the url the index carries, and says the rest is not recorded yet
+rm "$tmp/pages/alpine/v$RELEASE/conveyor-test/origins/fixt-two.json" || fail "the earlier run kept no record of fixt-two beside the index"
+rm -rf "$tmp/pg"; cp -R "$tmp/run-fixt-one-2/pub" "$tmp/pg"; rm -rf "$tmp/pg/site"
+( export NAME=fixt-one; run_step publish "The front page, the key, and the repository" "$tmp/pg" )
+s="$(sed -n '/<section id="fixt-two">/,/<\/section>/p' "$tmp/pg/site/index.html")"
+for t in "AGPL-3.0-only" "https://example.invalid/fixt-two" "not recorded"; do
+  printf '%s\n' "$s" | grep -qF -- "$t" || fail "a package live without a record: the page does not say: $t"
+done
+ok "a package published before the record was kept: licence and url from the index, the rest said not recorded"
+
+# an APKBUILD with no Origin line: the page says the origin is not stated, and still gives the source
+rm -rf "$tmp/pg"; cp -R "$tmp/run-fixt-one-2/pub" "$tmp/pg"; rm -rf "$tmp/pg/site"
+grep -v '^# Origin:' "$FIXTURES/page-url/APKBUILD" > "$tmp/pg/packaging/fixt-one/APKBUILD"
+( export NAME=fixt-one; run_step publish "The front page, the key, and the repository" "$tmp/pg" )
+s="$(sed -n '/<section id="fixt-one">/,/<\/section>/p' "$tmp/pg/site/index.html")"
+for t in "not stated" "tree/fixt-one-v2/packaging/fixt-one"; do
+  printf '%s\n' "$s" | grep -qF -- "$t" || fail "an APKBUILD with no Origin line: the page does not say: $t"
+done
+ok "an APKBUILD with no Origin line: the page says the origin is not stated"
 
 # the guard before the deploy: a site that would lose what is live is refused
 # (the pages hold fixt-one 2 and fixt-two 1; run-fixt-one-2/pub is the last release's publish folder)

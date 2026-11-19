@@ -1,12 +1,13 @@
 # A fixture for the conveyor's own test: a package whose source is a file beside its APKBUILD
 # (not a download), as sxmo-utils's rootfs-* files are. Its pkgver and checksum are the conveyor's to fill.
+# Origin: fixture two by an imaginary upstream (https://example.invalid/upstream), APKBUILD written here <b> & "q"
 pkgname=fixt-two
 pkgver=0
 pkgrel=0
 pkgdesc="Conveyor test fixture two"
 url="https://example.invalid/fixt-two"
 arch="noarch"
-license="MIT"
+license="AGPL-3.0-only"
 options="!check"
 makedepends="libcap-utils"   # package() needs setcap: the packaging container must have the makedepends too
 source="hello-two.sh"

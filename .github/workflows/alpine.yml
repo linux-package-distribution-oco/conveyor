@@ -39,11 +39,13 @@ jobs:
       repo: ${{ steps.d.outputs.repo }}
       archs: ${{ steps.d.outputs.archs }}
       title: ${{ steps.d.outputs.title }}
+      retire: ${{ steps.d.outputs.retire }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
-      - id: d
+      - name: The declaration, read
+        id: d
         env:
           DECLARATION: ${{ inputs.declaration }}
           TAG: ${{ inputs.tag }}
@@ -53,6 +55,10 @@ jobs:
           get() { printf '%s' "$j" | jq -r "$1"; }
           name="$(get '.package.name')"; prefix="$(get '.package["tag-prefix"] // "v"')"
           [ -n "$(get '.alpine.apkbuild // empty')" ] || { echo "the declaration has no [alpine] apkbuild" >&2; exit 1; }
+          # the packages this project no longer ships, which the live repository may still hold: dropped, not
+          # kept (jq stops the run on anything but a list of package names; a run cannot retire its own package)
+          retire="$(get '.alpine.retire // [] | if type == "array" and all(.[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+-]*$")) then join(" ") else error("alpine.retire must be a list of package names") end')"
+          case " $retire " in *" $name "*) echo "alpine.retire names $name, the package this declaration builds" >&2; exit 1 ;; esac
           {
             echo "name=$name"
             echo "version=${TAG#"$prefix"}"
@@ -62,6 +68,7 @@ jobs:
             echo "repo=$(get '.alpine.repo // .package.name')"
             echo "archs=$(get '.alpine.archs // ["aarch64"] | tojson')"
             echo "title=$(get '.site.title // (.package.name + " packages")')"
+            echo "retire=$retire"
           } >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
           [ -f "$(get '.alpine.key')" ] || { echo "the public key $(get '.alpine.key') is not in the repository" >&2; exit 1; }
@@ -104,6 +111,7 @@ jobs:
           NAME: ${{ needs.plan.outputs.name }}
           RELEASE: ${{ needs.plan.outputs.release }}
           ARCH: ${{ matrix.arch }}
+          RETIRE: ${{ needs.plan.outputs.retire }}
         run: |
           set -eu
           # One repository holds every package of the project's pages: the live index says which, and each
@@ -129,12 +137,14 @@ jobs:
             *) echo "the live index answered $code: an earlier package would be lost, so no build" >&2; exit 1 ;;
           esac
           live="$(apkindex live.tar.gz)"
-          printf '%s\n' "$live" | awk -v name="$NAME" '$3 != name { print $1 "-" $2 ".apk" }' > kept.txt
+          printf '%s\n' "$live" | awk -v name="$NAME" -v retire="$RETIRE" 'BEGIN { n = split(retire, a, " "); for (i = 1; i <= n; i++) r[a[i]] = 1 }
+            $3 != name && !($3 in r) { print $1 "-" $2 ".apk" }' > kept.txt
           while read -r f; do
             case "$f" in ""|*/*|.*) echo "FAIL: the live index names a file that is not a plain file name: $f" >&2; exit 1 ;; esac
             curl -fsS --retry 3 -o "$dir/$f" "$url/$f"
             echo "  kept $f"
           done < kept.txt
+          [ -z "$RETIRE" ] || echo "  retired, not kept: $RETIRE"
       - name: Build (the project's code - in a container of its own, which never sees the key)
         env:
           RELEASE: ${{ needs.plan.outputs.release }}
@@ -311,6 +321,7 @@ jobs:
           NAME: ${{ needs.plan.outputs.name }}
           RELEASE: ${{ needs.plan.outputs.release }}
           REPO: ${{ needs.plan.outputs.repo }}
+          RETIRE: ${{ needs.plan.outputs.retire }}
         run: |
           set -eu
           # A deploy replaces the pages whole. If a package is live that this site does not hold at that
@@ -333,7 +344,8 @@ jobs:
             live="$(apkindex live.tar.gz)"
             here="$(apkindex "site/$rel")"
             printf '%s\n' "$here" | awk '{ print $1 "-" $2 }' > site.pkgs
-            lost="$(printf '%s\n' "$live" | awk -v name="$NAME" '$3 != name { print $1 "-" $2 }' | grep -vxF -f site.pkgs || true)"
+            lost="$(printf '%s\n' "$live" | awk -v name="$NAME" -v retire="$RETIRE" 'BEGIN { n = split(retire, a, " "); for (i = 1; i <= n; i++) r[a[i]] = 1 }
+              $3 != name && !($3 in r) { print $1 "-" $2 }' | grep -vxF -f site.pkgs || true)"
             [ -z "$lost" ] || { echo "FAIL: live in $rel and not in this site: $lost" >&2; exit 1; }
           done
           echo "  ok  every package that is live is in the site, at its live version"

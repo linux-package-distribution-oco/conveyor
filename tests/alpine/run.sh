@@ -3,10 +3,11 @@
 # and run in order against a pages site served on this machine - the same text a release runs, so a test
 # cannot drift from the workflow (decision 2026-11-11-scripts-inline: the scripts live in the workflow).
 #
-# Three releases of two fixture packages whose source is a file beside the APKBUILD, as sxmo-utils's is:
+# Four releases of two fixture packages whose source is a file beside the APKBUILD, as sxmo-utils's is:
 #   fixt-one 1  -> the repository lists fixt-one, which installs
 #   fixt-two 1  -> the repository lists fixt-one AND fixt-two (the second must not replace the first)
 #   fixt-one 2  -> fixt-one at 2 only (the old one dropped), fixt-two still there
+#   fixt-one 3, fixt-two retired by the declaration -> fixt-one only: listed, served, on the page
 # Each release runs: the APKBUILD step, the kept-packages step, build, signed packaging, the front page,
 # the live check, the signature check, a (local) deploy, and the verify job's install step in a clean Alpine.
 #
@@ -96,6 +97,7 @@ release() {
   export VERSION RELEASE KEY ARCH APK_SIGNING_KEY PAGES_BASE
   export GITHUB_REPOSITORY_OWNER=nobody GITHUB_REPOSITORY=nobody/conveyor-test
   export TAG="$pkg-v$VERSION"
+  export RETIRE="${RETIRE:-}"
   # the publish job has the tag checked out: the package's folder as the project committed it
   mkdir -p "$run/pub/packaging/$pkg" && cp -R "$FIXTURES/$pkg/." "$run/pub/packaging/$pkg/"
 
@@ -210,5 +212,47 @@ export REPO=conveyor-test RELEASE ARCH GITHUB_REPOSITORY_OWNER=nobody GITHUB_REP
 refuse "a live package the site does not hold" fixt-one "$tmp/index-one.tgz"
 refuse "a live package at a version the site does not hold" fixt-two "$tmp/index-two.tgz"
 refuse "a live architecture the site has no index for" fixt-one none
+
+
+# a retirement: a package the project no longer ships is dropped on purpose, and only when declared
+# (`[alpine] retire = [...]`, read by the plan job as RETIRE): without it the deploy is refused (above:
+# refuse "a live package the site does not hold"); with it the same site goes; a loss that is not
+# declared is still refused.
+rm -rf "$tmp/neg"; cp -R "$tmp/run-fixt-one-2/pub" "$tmp/neg"
+cp "$tmp/index-one.tgz" "$tmp/neg/site/alpine/v$RELEASE/conveyor-test/$ARCH/APKINDEX.tar.gz"
+( export NAME=fixt-one RETIRE=fixt-two; run_step publish "Nothing already live is lost" "$tmp/neg" )
+ok "retired: a live package the site does not hold is let go when the declaration retires it"
+rm -rf "$tmp/neg"; cp -R "$tmp/run-fixt-one-2/pub" "$tmp/neg"
+cp "$tmp/index-two.tgz" "$tmp/neg/site/alpine/v$RELEASE/conveyor-test/$ARCH/APKINDEX.tar.gz"
+( export NAME=fixt-two RETIRE=fixt-two; step_fails publish "Nothing already live is lost" "$tmp/neg" )
+ok "refused: a loss the declaration does not retire (fixt-one, while fixt-two is retired)"
+
+# and the release that retires: fixt-two is not kept, so it leaves the index, the pages and the page's list
+( export RETIRE=fixt-two; release fixt-one 3 )
+[ "$(idx)" = "fixt-one " ] || fail "after fixt-one 3 retiring fixt-two the repository lists: $(idx)"
+[ "$(apks fixt-two)" = 0 ] || fail "the retired fixt-two is still served"
+grep -q 'apk add fixt-two' "$tmp/pages/index.html" && fail "the front page still offers the retired fixt-two"
+[ -z "$(section fixt-two)" ] || fail "the front page still has a section for the retired fixt-two"
+[ -f "$tmp/pages/alpine/v$RELEASE/conveyor-test/origins/fixt-two.json" ] && fail "the record of the retired fixt-two is still served"
+owes fixt-one "MIT" "tree/fixt-one-v3/packaging/fixt-one"
+ok "fixt-one 3 retiring fixt-two: only fixt-one is listed, served and on the page"
+
+# the declaration's side: the plan job reads `[alpine] retire` as a list of package names, and stops on
+# anything else, and on a package retiring itself
+plan_with() {  # RETIRE_LINE: the plan step's directory, with a declaration that has that line under [alpine]
+  rm -rf "$tmp/plan"; mkdir -p "$tmp/plan/packaging"; touch "$tmp/plan/out" "$tmp/plan/packaging/k.pub"
+  printf '[package]\nname = "fixt-one"\n\n[alpine]\napkbuild = "packaging/fixt-one/APKBUILD"\nkey = "packaging/k.pub"\n%s\n' "$1" > "$tmp/plan/packaging/conveyor.toml"
+}
+plan_with 'retire = ["fixt-two", "fixt-three"]'
+( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out"; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
+grep -qx 'retire=fixt-two fixt-three' "$tmp/plan/out" || fail "the plan step does not hand on the retired names: $(grep retire "$tmp/plan/out")"
+plan_with ''
+( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out"; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
+grep -qx 'retire=' "$tmp/plan/out" || fail "a declaration with no retire line retires nothing"
+for bad in 'retire = ["fixt-one"]' 'retire = "fixt-two"' 'retire = ["fixt two"]' 'retire = [1]'; do
+  plan_with "$bad"
+  ( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out"; step_fails plan "The declaration, read" "$tmp/plan" ) >/dev/null 2>&1 || fail "the plan step takes: $bad"
+done
+ok "the declaration: retire is a list of package names, none of them its own"
 
 echo "all ok"

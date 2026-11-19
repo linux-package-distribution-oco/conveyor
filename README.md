@@ -85,3 +85,18 @@ declared `name` must be its APKBUILD's `pkgname`. A run stops before the deploy 
 that its site does not hold at that version, or an architecture is live that its site has no index
 for (two runs overlapped, or the archs differ). `tests/alpine/run.sh` proves all of it on two fixture
 packages, with a local pages server.
+
+#### What the page says of each package
+
+The front page gives every package of the repository its licence, its origin and where its exact source
+is - what the reader of a redistributed binary is owed (AGPL-3.0 section 6(d) asks for directions to the
+source beside the object code). None of it is written by hand: the licence, the project url and the
+version are the signed index's (`L:`, `U:`, `V:`); the origin is the APKBUILD's `# Origin: ...` comment line;
+the source is its `source=` as abuild reads it for the release (the tarball at the public tag, for
+sxmo-utils `lab-20261118.1` of the fork), and the APKBUILD with the files beside it at the release tag.
+A run records the last two beside the index (`alpine/vRELEASE/REPO/origins/NAME.json`) and keeps the
+records of the packages it does not build, as it keeps their files. A package published before the
+conveyor kept a record shows its licence and url from the index and says the rest is not recorded, until
+its next release. A project keeps the `# Origin:` line and its `license=`/`url=` in each APKBUILD (lab-tools
+checks that in its CI); without the line the page says the origin is not stated. `tests/alpine/run.sh`
+proves the page, the kept records and the not-recorded case on its fixtures.

@@ -1,0 +1,12 @@
+# A fixture for the page only, never built: an APKBUILD whose source is a tarball at a public tag, the
+# tag made from pkgver the way sxmo-utils's is (lab-<date>.1), and files beside it.
+# Origin: sxmo-utils by ~mil on sr.ht; APKBUILD from Alpine aports; source our fork at the lab tag
+pkgname=fixt-one
+pkgver=1.18.1_p20261118
+pkgrel=0
+url="https://github.com/grenudi/sxmo-utils"
+license="AGPL-3.0-only"   # the page takes the licence from the index, not from here
+source="
+	$pkgname-$pkgver.tar.gz::https://github.com/grenudi/sxmo-utils/archive/refs/tags/lab-${pkgver#*_p}.1.tar.gz
+	rootfs-a.conf
+	"

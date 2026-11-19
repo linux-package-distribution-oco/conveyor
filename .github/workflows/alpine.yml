@@ -202,6 +202,10 @@ jobs:
           RELEASE: ${{ needs.plan.outputs.release }}
           REPO: ${{ needs.plan.outputs.repo }}
           TITLE: ${{ needs.plan.outputs.title }}
+          NAME: ${{ needs.plan.outputs.name }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          APKBUILD: ${{ needs.plan.outputs.apkbuild }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -eu
           base="${PAGES_BASE:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
@@ -210,24 +214,84 @@ jobs:
           # the packages the page offers are the origins its signed indexes list - every package of the
           # repository, this release's and the ones kept - not what this one run was told; every
           # architecture's index lists the same ones (packages of one repository share their archs)
-          names=""
+          names=""; first=""
           for idx in $(find "site/alpine/v$RELEASE/$REPO" -name APKINDEX.tar.gz | sort); do
             txt="$(tar -xzOf "$idx" APKINDEX)"
             these="$(printf '%s\n' "$txt" | sed -n 's/^o://p' | sort -u | tr '\n' ' ')"
             [ -n "$these" ] || { echo "the index $idx lists no package" >&2; exit 1; }
             [ -z "$names" ] || [ "$these" = "$names" ] || { echo "FAIL: the architectures' indexes list different packages ($names / $these): the packages of one repository share their archs" >&2; exit 1; }
-            names="$these"
+            names="$these"; [ -n "$first" ] || first="$txt"
           done
           [ -n "$names" ] || { echo "no index was built" >&2; exit 1; }
+          # What the reader of a redistributed binary is owed - its licence, where it comes from, where its
+          # exact source is (AGPL-3.0 6(d)) - is the package's own to say, so the page takes it from the
+          # package's files, never by hand: licence, url and version from the index (every package of the
+          # repository has them); origin and source from this run's APKBUILD, kept beside the index as
+          # origins/NAME.json, which a later run fetches for the packages it does not build.
+          odir="site/alpine/v$RELEASE/$REPO/origins"; mkdir -p "$odir"
+          adir="$(dirname "$APKBUILD")"
+          # source= as abuild reads it for this release: the APKBUILD sourced with pkgver as the build step
+          # sets it, in a container without the network (the tag's checkout is the project's own text, read-only)
+          srcs="$(docker run --rm --network none -e VERSION -v "$PWD/$adir:/a:ro" "alpine:$RELEASE" sh -c '
+            sed "s/^pkgver=.*/pkgver=$VERSION/" "/a/$1" > /tmp/APKBUILD && cd /a && . /tmp/APKBUILD && printf "%s\n" $source' sh "$(basename "$APKBUILD")")"
+          case "$adir" in .) recipe="https://github.com/${GITHUB_REPOSITORY}/tree/${TAG}" ;; *) recipe="https://github.com/${GITHUB_REPOSITORY}/tree/${TAG}/${adir}" ;; esac
+          jq -n --arg name "$NAME" --arg version "$VERSION" --arg tag "$TAG" --arg recipe "$recipe" \
+            --arg origin "$(sed -n 's/^# Origin: *//p' "$APKBUILD" | head -1)" --arg srcs "$srcs" \
+            '{ name: $name, version: $version, tag: $tag, origin: $origin, recipe: $recipe,
+               sources: ($srcs | split("\n") | map(select(test("://")) | sub("^[^ :]*::"; ""))) }' > "$odir/$NAME.json"
+          esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
+          # a link only for an http(s) address; anything else is text, and nothing is nothing
+          link() {
+            u="$(printf '%s' "$1" | esc)"
+            case "$1" in https://*|http://*) printf '<a href="%s">%s</a>' "$u" "$u" ;; *) printf '%s' "$u" ;; esac
+          }
+          # field NAME LETTER: that field (V version, L licence, U url) of the package in the index
+          field() {
+            printf '%s\n' "$first" | awk -v n="$1" -v f="$2:" 'BEGIN { RS = ""; FS = "\n" }
+              { p = ""; r = ""
+                for (i = 1; i <= NF; i++) { if ($i ~ /^P:/) p = substr($i, 3); if (index($i, f) == 1) r = substr($i, 3) }
+                if (p == n) { print r; exit } }'
+          }
+          for n in $names; do
+            [ "$n" != "$NAME" ] || continue
+            code="$(curl -sS -o "$odir/$n.json" -w '%{http_code}' --retry 3 "$base/alpine/v$RELEASE/$REPO/origins/$n.json?run=${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}")"
+            case "$code" in
+              200) # a record of another version of the package (two runs overlapped) is no record of this one
+                   jq -e --arg n "$n" --arg v "$(field "$n" V | sed 's/-r[0-9]*$//')" '.name == $n and .version == $v' "$odir/$n.json" >/dev/null || {
+                     echo "the live record of $n is not of the version the index lists: not recorded" >&2; rm -f "$odir/$n.json"; } ;;
+              404) rm -f "$odir/$n.json" ;; # published before the conveyor kept a record: the page says so
+              *) echo "the live record of $n answered $code" >&2; exit 1 ;;
+            esac
+          done
+          pk="$(mktemp)"
+          for n in $names; do
+            f="$odir/$n.json"
+            if [ -f "$f" ]; then
+              origin="$(jq -r '.origin' "$f" | esc)"; [ -n "$origin" ] || origin="not stated in the APKBUILD (a line &quot;# Origin: ...&quot;)"
+              srcl="$(jq -r '.sources[]' "$f" | while read -r u; do printf '<li>%s</li>\n' "$(link "$u")"; done)"
+              src="<ul>
+          ${srcl}
+          <li>the APKBUILD and the files beside it, at the release tag $(jq -r '.tag' "$f" | esc): $(link "$(jq -r '.recipe' "$f")")</li>
+          </ul>"
+            else
+              origin="not recorded: this package was published before the conveyor kept a record of each one's origin and source; its next release records it"
+              src="$origin"
+            fi
+            printf '<section id="%s">\n<h3>%s %s</h3>\n<dl>\n<dt>Licence</dt><dd>%s</dd>\n<dt>Project</dt><dd>%s</dd>\n<dt>Origin</dt><dd>%s</dd>\n<dt>Exact source</dt><dd>%s</dd>\n</dl>\n</section>\n' \
+              "$n" "$n" "$(field "$n" V | esc)" "$(field "$n" L | esc)" "$(link "$(field "$n" U)")" "$origin" "$src" >> "$pk"
+          done
           adds="$(for n in $names; do printf 'apk add %s\n' "$n"; done)"
           cat > site/index.html <<HTML
           <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>${TITLE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:.8rem;overflow:auto;border-radius:6px}</style></head>
+          <title>${TITLE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:.8rem;overflow:auto;border-radius:6px}dt{font-weight:600}dd{margin:0 0 .4rem 1rem;overflow-wrap:anywhere}</style></head>
           <body><h1>${TITLE}</h1><p>An Alpine (apk) repository for <a href="https://github.com/${GITHUB_REPOSITORY}">${GITHUB_REPOSITORY}</a>, for postmarketOS and Alpine ${RELEASE}, so apk updates it with the rest of the system.</p>
           <p>Signing key: <a href="keys/${keyfile}">${keyfile}</a></p><pre>wget -qO /etc/apk/keys/${keyfile} ${base}/keys/${keyfile}
           echo ${base}/alpine/v${RELEASE}/${REPO} &gt;&gt; /etc/apk/repositories
           apk update
           ${adds}</pre>
+          <h2>Packages: licence, origin and source</h2>
+          <p>Each package of this repository, with the licence it is under, where it comes from and where the exact source it was built from is.</p>
+          $(cat "$pk")
           <p>Delivered by the <a href="https://github.com/linux-package-distribution-oco/conveyor">package conveyor</a>.</p></body></html>
           HTML
           find site -type f | sort

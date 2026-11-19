@@ -100,3 +100,19 @@ conveyor kept a record shows its licence and url from the index and says the res
 its next release. A project keeps the `# Origin:` line and its `license=`/`url=` in each APKBUILD (lab-tools
 checks that in its CI); without the line the page says the origin is not stated. `tests/alpine/run.sh`
 proves the page, the kept records and the not-recorded case on its fixtures.
+
+#### Retiring a package
+
+A package the project stops shipping stays in the live repository, and every other package's run would
+keep it (and refuse a deploy that lost it). To drop it on purpose, say so in the declaration of the
+package whose run does the dropping:
+
+```toml
+[alpine]
+retire = ["sxmo-utils"]     # package names the live repository still holds and this project no longer ships
+```
+
+A run with `retire` does not fetch those packages' files, leaves them out of the signed index, the front
+page and the lost-check; its deploy replaces the pages whole, so they are gone from the site. The names
+must be package names, and a run cannot retire its own package. Take the line out if the package ever
+comes back: a run that retires a name drops it. Anything else that would be lost is still refused.

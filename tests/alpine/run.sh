@@ -244,15 +244,29 @@ plan_with() {  # RETIRE_LINE: the plan step's directory, with a declaration that
   printf '[package]\nname = "fixt-one"\n\n[alpine]\napkbuild = "packaging/fixt-one/APKBUILD"\nkey = "packaging/k.pub"\n%s\n' "$1" > "$tmp/plan/packaging/conveyor.toml"
 }
 plan_with 'retire = ["fixt-two", "fixt-three"]'
-( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out"; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
+( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out" RETIRE_NOW=""; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
 grep -qx 'retire=fixt-two fixt-three' "$tmp/plan/out" || fail "the plan step does not hand on the retired names: $(grep retire "$tmp/plan/out")"
 plan_with ''
-( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out"; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
+( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out" RETIRE_NOW=""; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
 grep -qx 'retire=' "$tmp/plan/out" || fail "a declaration with no retire line retires nothing"
 for bad in 'retire = ["fixt-one"]' 'retire = "fixt-two"' 'retire = ["fixt two"]' 'retire = [1]'; do
   plan_with "$bad"
-  ( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out"; step_fails plan "The declaration, read" "$tmp/plan" ) >/dev/null 2>&1 || fail "the plan step takes: $bad"
+  ( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out" RETIRE_NOW=""; step_fails plan "The declaration, read" "$tmp/plan" ) >/dev/null 2>&1 || fail "the plan step takes: $bad"
 done
 ok "the declaration: retire is a list of package names, none of them its own"
+
+# a retirement made after the release tag cannot be in the declaration the tag holds: the caller may say it
+# in the call (`retire:`, a space-separated list), and it is merged with the declaration's
+plan_with 'retire = ["fixt-two"]'
+( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out" RETIRE_NOW="fixt-three fixt-two"; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
+grep -qx 'retire=fixt-two fixt-three' "$tmp/plan/out" || fail "the plan step does not merge the call's retire with the declaration's: $(grep retire "$tmp/plan/out")"
+plan_with ''
+( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out" RETIRE_NOW="fixt-two"; run_step plan "The declaration, read" "$tmp/plan" ) >/dev/null
+grep -qx 'retire=fixt-two' "$tmp/plan/out" || fail "the plan step does not take the call's retire alone: $(grep retire "$tmp/plan/out")"
+for bad in "fixt-one" "fixt/two" "-x" "a;b"; do
+  plan_with ''
+  ( export DECLARATION=packaging/conveyor.toml TAG=v1 GITHUB_OUTPUT="$tmp/plan/out" RETIRE_NOW="$bad"; step_fails plan "The declaration, read" "$tmp/plan" ) >/dev/null 2>&1 || fail "the plan step takes a call that retires: $bad"
+done
+ok "the call's retire: merged with the declaration's, names only, none the run's own"
 
 echo "all ok"

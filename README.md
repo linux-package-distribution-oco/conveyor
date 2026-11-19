@@ -116,3 +116,7 @@ A run with `retire` does not fetch those packages' files, leaves them out of the
 page and the lost-check; its deploy replaces the pages whole, so they are gone from the site. The names
 must be package names, and a run cannot retire its own package. Take the line out if the package ever
 comes back: a run that retires a name drops it. Anything else that would be lost is still refused.
+
+The declaration is read at the release tag, so a retirement decided after the last tag is not in it yet.
+The caller can say it in the call instead, for one run (`retire: sxmo-utils`, space-separated names); the
+two lists are merged. lab-tools' `packages.yml` passes its manual run's `retire` input on.

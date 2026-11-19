@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: packaging/conveyor.toml
+      retire:
+        description: Package names to retire at this run, space separated, besides the declaration's `[alpine] retire` - for a retirement made after the release tag, which the tag's declaration cannot hold
+        required: false
+        type: string
+        default: ""
     secrets:
       APK_SIGNING_KEY:
         description: The repository signing key (an RSA private key, PEM - as abuild-keygen makes)
@@ -49,6 +54,7 @@ jobs:
         env:
           DECLARATION: ${{ inputs.declaration }}
           TAG: ${{ inputs.tag }}
+          RETIRE_NOW: ${{ inputs.retire }}
         run: |
           set -euo pipefail
           j="$(yq -p toml -o json '.' "$DECLARATION")"
@@ -58,7 +64,12 @@ jobs:
           # the packages this project no longer ships, which the live repository may still hold: dropped, not
           # kept (jq stops the run on anything but a list of package names; a run cannot retire its own package)
           retire="$(get '.alpine.retire // [] | if type == "array" and all(.[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+-]*$")) then join(" ") else error("alpine.retire must be a list of package names") end')"
-          case " $retire " in *" $name "*) echo "alpine.retire names $name, the package this declaration builds" >&2; exit 1 ;; esac
+          set -f
+          for w in $RETIRE_NOW; do
+            case "$w" in *[!A-Za-z0-9._+-]*|[!A-Za-z0-9]*) echo "retire: $w is not a package name" >&2; exit 1 ;; esac
+            case " $retire " in *" $w "*) ;; *) retire="${retire:+$retire }$w" ;; esac
+          done
+          case " $retire " in *" $name "*) echo "retire names $name, the package this declaration builds" >&2; exit 1 ;; esac
           {
             echo "name=$name"
             echo "version=${TAG#"$prefix"}"
